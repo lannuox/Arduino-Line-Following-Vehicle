@@ -5,4 +5,4 @@
 - Lanno
 - Oscar
 
-The project is not yet stared
+The project is started on 27th Oct 2025
