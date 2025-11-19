@@ -1,0 +1,168 @@
+#include <LiquidCrystal.h>
+
+// ---------------- LCD ----------------
+LiquidCrystal lcd(8, 9, 4, 5, 6, 7);
+
+// ---------------- Pin 定义 ----------------
+// IR Sensors (实际作为 digital input)
+#define IR_LEFT   A3
+#define IR_MID    A2
+#define IR_RIGHT  A1
+
+// Wheel Encoders (digital)
+#define ENC_LEFT  A5
+#define ENC_RIGHT A4
+
+// Motor pins
+#define L_PWM   11
+#define R_PWM   3
+#define L_IN1   1
+#define L_IN2   2
+#define R_IN1   12
+#define R_IN2   13
+
+// ---------------- 小车参数 ----------------
+const int baseSpeed = 100;        // 默认 PWM 速度
+const float wheelCirc = 75.0;     // mm per revolution
+const int encoderPPR = 40;        // 20 空 + 20 实 = 40 pulses
+
+// ---------------- 编码器变量 ----------------
+volatile long leftCount = 0;
+volatile long rightCount = 0;
+
+// ---------------- 时间计算 ----------------
+unsigned long startTime;
+
+// ==================== 中断函数 ====================
+void leftEncoderISR() {
+  leftCount++;
+}
+
+void rightEncoderISR() {
+  rightCount++;
+}
+
+// ==================== 电机控制函数 ====================
+void setMotor(int lpwm, int rpwm) {
+  // 左轮前进
+  if (lpwm >= 0) {
+    digitalWrite(L_IN1, HIGH);
+    digitalWrite(L_IN2, LOW);
+  } else {
+    digitalWrite(L_IN1, LOW);
+    digitalWrite(L_IN2, HIGH);
+    lpwm = -lpwm;
+  }
+
+  // 右轮前进
+  if (rpwm >= 0) {
+    digitalWrite(R_IN1, HIGH);
+    digitalWrite(R_IN2, LOW);
+  } else {
+    digitalWrite(R_IN1, LOW);
+    digitalWrite(R_IN2, HIGH);
+    rpwm = -rpwm;
+  }
+
+  analogWrite(L_PWM, constrain(lpwm, 0, 255));
+  analogWrite(R_PWM, constrain(rpwm, 0, 255));
+}
+
+// ==================== 读取 IR Sensor ====================
+void readIRSensors(bool &L, bool &M, bool &R) {
+  L = digitalRead(IR_LEFT) == LOW;
+  M = digitalRead(IR_MID)  == LOW;
+  R = digitalRead(IR_RIGHT)== LOW;
+}
+
+// ==================== speed trim（让车走直）====================
+int speedTrim() {
+  long diff = leftCount - rightCount;
+
+  // 简易线性补偿，不用太 fancy，小车就喜欢朴实无华 🤖
+  return constrain(diff * 2, -30, 30);
+}
+
+// ==================== 计算距离 ====================
+float getDistanceMM() {
+  float avgCount = (leftCount + rightCount) / 2.0;
+  float rev = avgCount / encoderPPR;
+  return rev * wheelCirc; // mm
+}
+
+// ==================== LCD 显示 ====================
+void updateLCD() {
+  unsigned long t = (millis() - startTime) / 1000;
+
+  lcd.setCursor(0, 0);
+  lcd.print("Time: ");
+  lcd.print(t);
+  lcd.print("s   ");
+
+  lcd.setCursor(0, 1);
+  lcd.print("Dist: ");
+  lcd.print(getDistanceMM(), 1);
+  lcd.print("mm");
+}
+
+// ==================== SETUP ====================
+void setup() {
+  lcd.begin(16, 2);
+
+  pinMode(IR_LEFT,  INPUT_PULLUP);
+  pinMode(IR_MID,   INPUT_PULLUP);
+  pinMode(IR_RIGHT, INPUT_PULLUP);
+
+  pinMode(ENC_LEFT,  INPUT_PULLUP);
+  pinMode(ENC_RIGHT, INPUT_PULLUP);
+
+  pinMode(L_PWM, OUTPUT);
+  pinMode(R_PWM, OUTPUT);
+  pinMode(L_IN1, OUTPUT);
+  pinMode(L_IN2, OUTPUT);
+  pinMode(R_IN1, OUTPUT);
+  pinMode(R_IN2, OUTPUT);
+
+  attachInterrupt(digitalPinToInterrupt(ENC_LEFT),  leftEncoderISR,  CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ENC_RIGHT), rightEncoderISR, CHANGE);
+
+  startTime = millis();
+
+  lcd.print("Line Car Ready!");
+  delay(1000);
+}
+
+// ==================== LOOP 主逻辑 ====================
+void loop() {
+  bool L, M, R;
+  readIRSensors(L, M, R);
+
+  int trim = speedTrim(); // 编码器速度补偿
+
+  int leftSpeed  = baseSpeed - trim;
+  int rightSpeed = baseSpeed + trim;
+
+  // ---------------- Line Following 核心逻辑 ----------------
+  if (M) {
+    // 中 sensor 在黑线上 → 直行
+    setMotor(leftSpeed, rightSpeed);
+
+  } else {
+    // 左或右遇黑线 → 修正
+    if (L) {
+      // 左 sensor 黑线 → 左偏 → 往右纠正
+      setMotor(leftSpeed + 40, rightSpeed - 40);
+    }
+    else if (R) {
+      // 右 sensor 黑线 → 右偏 → 往左纠正
+      setMotor(leftSpeed - 40, rightSpeed + 40);
+    }
+    else {
+      // 三个都没看到黑线 → 有点慌（迷路模式）😂 → 停一下
+      setMotor(0, 0);
+    }
+  }
+
+  updateLCD();
+  delay(80); // 稍微慢一点，让 LCD 能看清楚一点
+}
