@@ -22,13 +22,16 @@ LiquidCrystal lcd(8, 9, 4, 5, 6, 7);
 #define R_IN2   13
 
 // ---------------- 小车参数 ----------------
-const int baseSpeed = 150;       // 默认 PWM 速度
+const int baseSpeed = 100;       // 默认 PWM 速度
 const float wheelCirc = 7.5;    // 每圈轮子周长 cm
-const int encoderPPR = 40;       // 编码器每转脉冲数
+const float encoderPPR = 40;       // 编码器每转脉冲数
+float distance;
+bool stoppedForever = false;
+
 
 // ---------------- 编码器计数 ----------------
-long leftCount = 0;
-long rightCount = 0;
+volatile long leftCount = 0;
+volatile long rightCount = 0;
 
 // ---------------- 时间 ----------------
 unsigned long startTime;
@@ -41,7 +44,10 @@ void hardStop() {
   digitalWrite(L_IN2, LOW);
   digitalWrite(R_IN1, LOW);
   digitalWrite(R_IN2, LOW);
+
+  stoppedForever = true;   // <-- permanently stop robot
 }
+
 
 // ==================== 编码器中断 ====================
 void leftEncoderISR()  { leftCount++; }   // 左轮编码器脉冲加1
@@ -62,11 +68,11 @@ void setMotor(int lpwm, int rpwm) {
 }
 
 // ==================== speed trim（让车走直）====================
-int speedTrim() {
+int speedTrim() {  
   long diff = leftCount - rightCount;
 
   // 简易线性补偿，不用太 fancy，小车就喜欢朴实无华 🤖
-  return constrain(diff * 2, -30, 30);
+  return constrain(diff * 2, -50, 50);
 }
 
 // ==================== 读取 IR 传感器 ====================
@@ -76,16 +82,15 @@ void readIRSensors(bool &L, bool &M, bool &R) {
   R = digitalRead(IR_RIGHT) == LOW;  // 右黑线为 LOW
 }
 
-// ==================== 计算距离 ====================
-float getDistanceCM() {
-  // 平均编码器计数计算距离
-  float avgCount = (leftCount + rightCount) / 2.0;
-  float rev = avgCount / encoderPPR;  // 转数
-  return rev * wheelCirc;             // cm
+float updateDist() {
+  float rev = ((leftCount + rightCount) / 2.0) / encoderPPR;
+  distance = rev*wheelCirc;   // <-- update global variable
+  return distance;
 }
 
 // ==================== 更新 LCD ====================
 void updateLCD() {
+
   lcd.setCursor(0, 0);
   lcd.print("Time: ");
   lcd.print((millis() - startTime) / 1000);
@@ -93,9 +98,30 @@ void updateLCD() {
 
   lcd.setCursor(0, 1);
   lcd.print("Dist: ");
-  lcd.print(getDistanceCM());
+  lcd.print(distance);
   lcd.print("cm   ");
 }
+
+volatile boolean lastA4 = HIGH;
+volatile boolean lastA5 = HIGH;
+
+ISR(PCINT1_vect) {
+  boolean currA4 = digitalRead(A4);
+  boolean currA5 = digitalRead(A5);
+
+  // A4 rising edge = left encoder pulse
+  if (lastA4 == LOW && currA4 == HIGH) {
+    leftCount++;
+  }
+  lastA4 = currA4;
+
+  // A5 rising edge = right encoder pulse
+  if (lastA5 == LOW && currA5 == HIGH) {
+    rightCount++;
+  }
+  lastA5 = currA5;
+}
+
 
 // ==================== SETUP ====================
 void setup() {
@@ -116,8 +142,11 @@ void setup() {
   pinMode(R_IN2, OUTPUT);
 
   // 编码器中断
-  attachInterrupt(digitalPinToInterrupt(ENC_LEFT),  leftEncoderISR,  RISING);
-  attachInterrupt(digitalPinToInterrupt(ENC_RIGHT), rightEncoderISR, RISING);
+  // Enable Pin Change Interrupts on PCINT1 group (A0–A5)
+PCICR |= (1 << PCIE1);
+
+// Enable interrupts for PCINT20 (A4) and PCINT21 (A5)
+PCMSK1 |= (1 << PCINT20) | (1 << PCINT21);
 
   startTime = millis();
 
@@ -127,6 +156,7 @@ void setup() {
 
 // ==================== LOOP 主逻辑 ====================
 void loop() {
+
   bool L, M, R;
   readIRSensors(L, M, R);
 
@@ -139,6 +169,12 @@ void loop() {
     hardStop();
     return;
   }
+
+  if (stoppedForever) {
+    hardStop();      // keep motors off
+    updateLCD();     // still show time/dist if you want
+    return;          // stop everything else FOREVER
+}
 
   // ---- 全白自旋 ----
   static unsigned long allWhiteStart = 0;
@@ -165,6 +201,8 @@ void loop() {
   }
 
   // ---- 更新 LCD 显示时间和距离 ----
-  updateLCD();
-  delay(5);
+    updateDist();
+    updateLCD();
+    delay(2);
+
 }
