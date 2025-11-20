@@ -4,16 +4,16 @@
 LiquidCrystal lcd(8, 9, 4, 5, 6, 7);
 
 // ---------------- Pin 定义 ----------------
-// IR Sensors (数字输入)
+// IR 传感器
 #define IR_LEFT   A3
 #define IR_MID    A2
 #define IR_RIGHT  A1
 
-// Wheel Encoders (数字)
+// 编码器
 #define ENC_LEFT  A5
 #define ENC_RIGHT A4
 
-// Motor pins
+// 电机
 #define L_PWM   11
 #define R_PWM   3
 #define L_IN1   1
@@ -22,111 +22,79 @@ LiquidCrystal lcd(8, 9, 4, 5, 6, 7);
 #define R_IN2   13
 
 // ---------------- 小车参数 ----------------
-const int baseSpeed = 200;        // 默认 PWM 速度
-const float wheelCirc = 7.5;     // 每圈轮子周长 cm
-const int encoderPPR = 40;        // 编码器脉冲数
+const int baseSpeed = 160;       // 默认 PWM 速度
+const float wheelCirc = 7.5;    // 每圈轮子周长 cm
+const int encoderPPR = 40;       // 编码器每转脉冲数
 
-// ---------------- 编码器变量 ----------------
-volatile long leftCount = 0;
-volatile long rightCount = 0;
+// ---------------- 编码器计数 ----------------
+long leftCount = 0;
+long rightCount = 0;
 
-// ---------------- 时间计算 ----------------
+// ---------------- 时间 ----------------
 unsigned long startTime;
 
 // ==================== 强制停止 ====================
 void hardStop() {
-  // 关闭 PWM
   analogWrite(L_PWM, 0);
   analogWrite(R_PWM, 0);
-
-  // H桥两端拉低
   digitalWrite(L_IN1, LOW);
   digitalWrite(L_IN2, LOW);
   digitalWrite(R_IN1, LOW);
   digitalWrite(R_IN2, LOW);
 }
 
-// ==================== 中断函数 ====================
-void leftEncoderISR() { leftCount++; }
-void rightEncoderISR() { rightCount++; }
+// ==================== 编码器中断 ====================
+void leftEncoderISR()  { leftCount++; }   // 左轮编码器脉冲加1
+void rightEncoderISR() { rightCount++; }  // 右轮编码器脉冲加1
 
-// ==================== 电机控制函数 ====================
+// ==================== 电机控制 ====================
 void setMotor(int lpwm, int rpwm) {
-  // 左轮前进
-  if (lpwm >= 0) {
-    digitalWrite(L_IN1, HIGH);
-    digitalWrite(L_IN2, LOW);
-  } else {
-    digitalWrite(L_IN1, LOW);
-    digitalWrite(L_IN2, HIGH);
-    lpwm = -lpwm;
-  }
+  // 左轮
+  if (lpwm >= 0) { digitalWrite(L_IN1, HIGH); digitalWrite(L_IN2, LOW); }
+  else { digitalWrite(L_IN1, LOW); digitalWrite(L_IN2, HIGH); lpwm = -lpwm; }
 
-  // 右轮前进
-  if (rpwm >= 0) {
-    digitalWrite(R_IN1, HIGH);
-    digitalWrite(R_IN2, LOW);
-  } else {
-    digitalWrite(R_IN1, LOW);
-    digitalWrite(R_IN2, HIGH);
-    rpwm = -rpwm;
-  }
+  // 右轮
+  if (rpwm >= 0) { digitalWrite(R_IN1, HIGH); digitalWrite(R_IN2, LOW); }
+  else { digitalWrite(R_IN1, LOW); digitalWrite(R_IN2, HIGH); rpwm = -rpwm; }
 
   analogWrite(L_PWM, constrain(lpwm, 0, 255));
   analogWrite(R_PWM, constrain(rpwm, 0, 255));
 }
 
-// ==================== 读取 IR Sensor ====================
+// ==================== speed trim（让车走直）====================
+int speedTrim() {
+  long diff = leftCount - rightCount;
+
+  // 简易线性补偿，不用太 fancy，小车就喜欢朴实无华 🤖
+  return constrain(diff * 2, -30, 30);
+}
+
+// ==================== 读取 IR 传感器 ====================
 void readIRSensors(bool &L, bool &M, bool &R) {
   L = digitalRead(IR_LEFT) == LOW;   // 左黑线为 LOW
-  M = digitalRead(IR_MID)  == HIGH;  // 中间传感器反转逻辑
+  M = digitalRead(IR_MID)  == HIGH;  // 中间传感器逻辑反转
   R = digitalRead(IR_RIGHT) == LOW;  // 右黑线为 LOW
 }
 
-// ==================== speed trim（让车走直）====================
-int speedTrim() {
-  // 为避免 volatile long 读取错误，需要先复制
-  long left, right;
-  noInterrupts(); // 关闭中断
-  left = leftCount;
-  right = rightCount;
-  interrupts();   // 开启中断
-
-  long diff = left - right;
-
-  // 使用增量差值防止 encoder 累积过大导致 trim 饱和
-  static long lastDiff = 0;
-  long delta = diff - lastDiff;
-  lastDiff = diff;
-
-  // 将 trim 限制在 -50 到 50
-  return constrain(delta * 2, -50, 50);
-}
-
-// ==================== 计算距离 =====================
+// ==================== 计算距离 ====================
 float getDistanceCM() {
-  long left, right;
-  noInterrupts();
-  left = leftCount;
-  right = rightCount;
-  interrupts();
-
-  float avgCount = (left + right) / 2.0;
-  float rev = avgCount / encoderPPR;
-  return rev * wheelCirc;
+  // 平均编码器计数计算距离
+  float avgCount = (leftCount + rightCount) / 2.0;
+  float rev = avgCount / encoderPPR;  // 转数
+  return rev * wheelCirc;             // cm
 }
 
-// ==================== 显示时间和距离 =====================
+// ==================== 更新 LCD ====================
 void updateLCD() {
   lcd.setCursor(0, 0);
   lcd.print("Time: ");
   lcd.print((millis() - startTime) / 1000);
-  lcd.print("s       ");
+  lcd.print("s   ");
 
   lcd.setCursor(0, 1);
   lcd.print("Dist: ");
   lcd.print(getDistanceCM(), 1);
-  lcd.print("cm       ");
+  lcd.print("cm   ");
 }
 
 // ==================== SETUP ====================
@@ -147,8 +115,9 @@ void setup() {
   pinMode(R_IN1, OUTPUT);
   pinMode(R_IN2, OUTPUT);
 
-  attachInterrupt(digitalPinToInterrupt(ENC_LEFT),  leftEncoderISR,  CHANGE);
-  attachInterrupt(digitalPinToInterrupt(ENC_RIGHT), rightEncoderISR, CHANGE);
+  // 编码器中断
+  attachInterrupt(digitalPinToInterrupt(ENC_LEFT),  leftEncoderISR,  RISING);
+  attachInterrupt(digitalPinToInterrupt(ENC_RIGHT), rightEncoderISR, RISING);
 
   startTime = millis();
 
@@ -161,13 +130,17 @@ void loop() {
   bool L, M, R;
   readIRSensors(L, M, R);
 
-  // ---- HARD STOP: all sensors detect black ----
+  int trim = speedTrim(); // 编码器速度补偿
+  int leftSpeed  = baseSpeed - trim;
+  int rightSpeed = baseSpeed + trim;
+
+  // ---- 全黑停止 ----
   if (L && M && R) {  
     hardStop();
     return;
   }
 
-  // ---- SPIN: all sensors detect white ----
+  // ---- 全白自旋 ----
   static unsigned long allWhiteStart = 0;
   if (!L && !M && !R) {  
     if (allWhiteStart == 0) allWhiteStart = millis();
@@ -179,34 +152,19 @@ void loop() {
     allWhiteStart = 0;
   }
 
-  // ---- LINE FOLLOWING ----
-  int trim = speedTrim();
-  int leftSpeed  = baseSpeed - trim;
-  int rightSpeed = baseSpeed + trim;
+  // ---- 循迹逻辑 ----
 
   if (M) {
-    // 走直
-    setMotor(leftSpeed, rightSpeed);
+    setMotor(leftSpeed, rightSpeed); // 中间传感器检测到黑线，直行
   } else {
     if (L) {
-      // 左偏
-      int lSpeed = leftSpeed - 100;
-      int rSpeed = rightSpeed + 100;
-      lSpeed = constrain(lSpeed, -255, 255);
-      rSpeed = constrain(rSpeed, -255, 255);
-      setMotor(lSpeed, rSpeed);
-    }
-    else if (R) {
-      // 右偏
-      int lSpeed = leftSpeed + 100;
-      int rSpeed = rightSpeed - 100;
-      lSpeed = constrain(lSpeed, -255, 255);
-      rSpeed = constrain(rSpeed, -255, 255);
-      setMotor(lSpeed, rSpeed);
+      setMotor(leftSpeed - 100, rightSpeed + 100); // 左偏，右转修正
+    } else if (R) {
+      setMotor(leftSpeed + 100, rightSpeed - 100); // 右偏，左转修正
     }
   }
 
-  // ---- UPDATE TIME & DISTANCE LCD ----
+  // ---- 更新 LCD 显示时间和距离 ----
   updateLCD();
   delay(5);
 }
