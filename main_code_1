@@ -101,7 +101,7 @@ void setMotor(int Lspd, int Rspd) {
 // ======================= 软件速度补偿（软修正） =======================
 int speedTrim() {
   long diff = rightCount - leftCount;
-  return constrain(diff * 2, -60, 60);
+  return constrain(diff * 2, -70, 70);
 }
 
 // ======================= 读取三个 IR 传感器 =======================
@@ -165,11 +165,23 @@ void loop() {
   bool L, M, R;
   readIRSensors(L, M, R);
 
+  // ----------- 永久停止状态保持 -----------
+  if (stoppedForever) {
+    motorStopHard();
+    return;
+  }
+
+      // ----------- 全黑 → 永久停止 -----------
+  if (L && M && R) {
+    motorStopHard();
+    return;
+  }
+
 // ----------- 原地旋转（全白超过300ms触发） -----------
 if (!L && !M && !R) {
     if (allWhiteTimer == 0) allWhiteTimer = millis();  // 记录开始时间
 
-    if (millis() - allWhiteTimer > 300) {      
+    if (millis() - allWhiteTimer > 200) {      
         setMotor(255, -255);   // 顺时针旋转：左前右后
         updateLCD();
         return;
@@ -177,12 +189,6 @@ if (!L && !M && !R) {
 } else {
     allWhiteTimer = 0;   // 只要有黑线，重置计时器
 }
-
-    // ----------- 全黑 → 永久停止 -----------
-  if (L && M && R) {
-    motorStopHard();
-    return;
-  }
 
   // ----------- 速度补偿（软修正） -----------
   int trim = speedTrim();
@@ -194,19 +200,13 @@ if (!L && !M && !R) {
     // 中间黑线 → 直行
     setMotor(Lspd, Rspd);
   } 
-  else if (L) {
+  else if ((M && L) || (L && !M && !R)) {
     // 左黑线 → 右转硬修正
-    setMotor(Lspd - 160, Rspd + 140);
+    setMotor(Lspd - 160, Rspd + 130);
   }
-  else if (R) {
+  else if ((M && R) || (!L && !M && R)) {
     // 右黑线 → 左转硬修正
-    setMotor(Lspd + 140 , Rspd - 160);
-  }
-
-  // ----------- 永久停止状态保持 -----------
-  if (stoppedForever) {
-    motorStopHard();
-    return;
+    setMotor(Lspd + 130 , Rspd - 160);
   }
 
   // ----------- 更新显示 -----------  
