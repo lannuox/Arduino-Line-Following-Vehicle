@@ -22,7 +22,7 @@ LiquidCrystal lcd(8, 9, 4, 5, 6, 7);
 #define R_IN2   13
 
 // ---------------- 小车参数 ----------------
-const int baseSpeed = 100;       // 默认 PWM 速度
+const int baseSpeed = 120;       // 默认 PWM 速度
 const float wheelCirc = 7.5;    // 每圈轮子周长 cm
 const float encoderPPR = 40;       // 编码器每转脉冲数
 float distance;
@@ -72,7 +72,7 @@ int speedTrim() {
   long diff = leftCount - rightCount;
 
   // 简易线性补偿，不用太 fancy，小车就喜欢朴实无华 🤖
-  return constrain(diff * 2, -50, 50);
+  return constrain(diff * 2, -70, 70);
 }
 
 // ==================== 读取 IR 传感器 ====================
@@ -99,7 +99,7 @@ void updateLCD() {
   lcd.setCursor(0, 1);
   lcd.print("Dist: ");
   lcd.print(distance);
-  lcd.print("cm   ");
+  lcd.print("cm      ");
 }
 
 volatile boolean lastA4 = HIGH;
@@ -194,15 +194,15 @@ void loop() {
     setMotor(leftSpeed, rightSpeed); // 中间传感器检测到黑线，直行
   } else {
     if (L) {
-      setMotor(leftSpeed - 100, rightSpeed + 100); // 左偏，右转修正
+      setMotor(leftSpeed - 90, rightSpeed + 90); // 左偏，右转修正
     } else if (R) {
-      setMotor(leftSpeed + 100, rightSpeed - 100); // 右偏，左转修正
+      setMotor(leftSpeed + 90, rightSpeed - 90); // 右偏，左转修正
     }
   }
 
   // ---- 更新 LCD 显示时间和距离 ----
     updateDist();
     updateLCD();
-    delay(2);
+    delay(5);
 
 }
