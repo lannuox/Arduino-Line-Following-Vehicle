@@ -22,7 +22,7 @@ LiquidCrystal lcd(8, 9, 4, 5, 6, 7);
 #define R_IN2   13
 
 // ======================= 车辆参数 =======================
-const int baseSpeed = 120;      // 基本速度
+const int baseSpeed = 180;      // 基本速度
 const float wheelCirc = 7.5;    // 轮子周长 (cm)
 const float encoderPPR = 40.0;  // 每圈脉冲数
 
@@ -32,6 +32,7 @@ volatile long rightCount = 0;
 
 unsigned long startTime = 0;
 unsigned long allWhiteTimer = 0;
+unsigned long allBlackTimer = 0;
 
 float distance = 0.0;
 bool stoppedForever = false;
@@ -100,7 +101,7 @@ void setMotor(int Lspd, int Rspd) {
 // ======================= 软件速度补偿（软修正） =======================
 int speedTrim() {
   long diff = rightCount - leftCount;
-  return constrain(diff * 2, -50, 50);
+  return constrain(diff * 2, -60, 60);
 }
 
 // ======================= 读取三个 IR 传感器 =======================
@@ -164,11 +165,23 @@ void loop() {
   bool L, M, R;
   readIRSensors(L, M, R);
 
-  // ----------- 原地旋转 -----------
-  if (!L && !M && !R) {
-    setMotor(255, -255);   // 顺时针旋转：左退右进
-      updateLCD();
-      return;
+// ----------- 原地旋转（全白超过300ms触发） -----------
+if (!L && !M && !R) {
+    if (allWhiteTimer == 0) allWhiteTimer = millis();  // 记录开始时间
+
+    if (millis() - allWhiteTimer > 250) {      
+        setMotor(255, -255);   // 顺时针旋转：左前右后
+        updateLCD();
+        return;
+    }
+} else {
+    allWhiteTimer = 0;   // 只要有黑线，重置计时器
+}
+
+    // ----------- 全黑 → 永久停止 -----------
+  if (L && M && R) {
+    motorStopHard();
+    return;
   }
 
   // ----------- 速度补偿（软修正） -----------
@@ -183,28 +196,21 @@ void loop() {
   } 
   else if (L) {
     // 左黑线 → 右转硬修正
-    setMotor(Lspd - 100, Rspd + 100);
+    setMotor(Lspd - 160, Rspd + 130);
   }
   else if (R) {
     // 右黑线 → 左转硬修正
-    setMotor(Lspd + 100, Rspd - 100);
-  }
-
-    // ----------- 全黑 → 永久停止 -----------
-  if (L && M && R) {
-    motorStopHard();
-    return;
+    setMotor(Lspd + 130 , Rspd - 160);
   }
 
   // ----------- 永久停止状态保持 -----------
   if (stoppedForever) {
     motorStopHard();
-    updateLCD();
     return;
   }
 
   // ----------- 更新显示 -----------  
   updateDist();
   updateLCD();
-  delay(1);
+  delay(5);
 }
