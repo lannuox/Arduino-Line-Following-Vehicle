@@ -169,7 +169,7 @@ void loop() {
 if (!L && !M && !R) {
     if (allWhiteTimer == 0) allWhiteTimer = millis();  // 记录开始时间
 
-    if (millis() - allWhiteTimer > 250) {      
+    if (millis() - allWhiteTimer > 300) {      
         setMotor(255, -255);   // 顺时针旋转：左前右后
         updateLCD();
         return;
@@ -196,11 +196,11 @@ if (!L && !M && !R) {
   } 
   else if (L) {
     // 左黑线 → 右转硬修正
-    setMotor(Lspd - 160, Rspd + 130);
+    setMotor(Lspd - 160, Rspd + 140);
   }
   else if (R) {
     // 右黑线 → 左转硬修正
-    setMotor(Lspd + 130 , Rspd - 160);
+    setMotor(Lspd + 140 , Rspd - 160);
   }
 
   // ----------- 永久停止状态保持 -----------
@@ -212,5 +212,5 @@ if (!L && !M && !R) {
   // ----------- 更新显示 -----------  
   updateDist();
   updateLCD();
-  delay(5);
+  delay(1);
 }
