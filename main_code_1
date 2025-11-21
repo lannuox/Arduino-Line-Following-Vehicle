@@ -1,19 +1,19 @@
 #include <LiquidCrystal.h>
 
-// ---------------- LCD ----------------
+// ======================= LCD 屏幕 =======================
 LiquidCrystal lcd(8, 9, 4, 5, 6, 7);
 
-// ---------------- Pin 定义 ----------------
-// IR 传感器
+// ======================= 引脚定义 =======================
+// IR 传感器：左 & 右黑线→LOW，中间黑线→HIGH
 #define IR_LEFT   A3
 #define IR_MID    A2
 #define IR_RIGHT  A1
 
-// 编码器
-#define ENC_LEFT  A5
-#define ENC_RIGHT A4
+// 编码器（PCINT1）
+#define ENC_LEFT  A5   // PCINT21
+#define ENC_RIGHT A4   // PCINT20
 
-// 电机
+// 电机引脚
 #define L_PWM   11
 #define R_PWM   3
 #define L_IN1   1
@@ -21,76 +21,104 @@ LiquidCrystal lcd(8, 9, 4, 5, 6, 7);
 #define R_IN1   12
 #define R_IN2   13
 
-// ---------------- 小车参数 ----------------
-const int baseSpeed = 120;       // 默认 PWM 速度
-const float wheelCirc = 7.5;    // 每圈轮子周长 cm
-const float encoderPPR = 40;       // 编码器每转脉冲数
-float distance;
-bool stoppedForever = false;
+// ======================= 车辆参数 =======================
+const int baseSpeed = 120;      // 基本速度
+const float wheelCirc = 7.5;    // 轮子周长 (cm)
+const float encoderPPR = 40.0;  // 每圈脉冲数
 
-
-// ---------------- 编码器计数 ----------------
+// ======================= 全局变量 =======================
 volatile long leftCount = 0;
 volatile long rightCount = 0;
 
-// ---------------- 时间 ----------------
-unsigned long startTime;
+unsigned long startTime = 0;
+unsigned long allWhiteTimer = 0;
 
-// ==================== 强制停止 ====================
-void hardStop() {
+float distance = 0.0;
+bool stoppedForever = false;
+
+// ======================= 函数声明 =======================
+void readIRSensors(bool &L, bool &M, bool &R);
+void motorStopHard();
+void setMotor(int Lspd, int Rspd);
+int speedTrim();
+void updateLCD();
+float updateDist();
+
+// ======================= 强制停止（永久） =======================
+void motorStopHard() {
   analogWrite(L_PWM, 0);
   analogWrite(R_PWM, 0);
   digitalWrite(L_IN1, LOW);
   digitalWrite(L_IN2, LOW);
   digitalWrite(R_IN1, LOW);
   digitalWrite(R_IN2, LOW);
-
-  stoppedForever = true;   // <-- permanently stop robot
+  stoppedForever = true;
 }
 
+// ======================= 编码器 PCINT 中断 =======================
+volatile bool lastA4 = HIGH;
+volatile bool lastA5 = HIGH;
 
-// ==================== 编码器中断 ====================
-void leftEncoderISR()  { leftCount++; }   // 左轮编码器脉冲加1
-void rightEncoderISR() { rightCount++; }  // 右轮编码器脉冲加1
+ISR(PCINT1_vect) {
+  bool currA4 = digitalRead(A4);
+  bool currA5 = digitalRead(A5);
 
-// ==================== 电机控制 ====================
-void setMotor(int lpwm, int rpwm) {
-  // 左轮
-  if (lpwm >= 0) { digitalWrite(L_IN1, HIGH); digitalWrite(L_IN2, LOW); }
-  else { digitalWrite(L_IN1, LOW); digitalWrite(L_IN2, HIGH); lpwm = -lpwm; }
+  if (lastA4 == LOW && currA4 == HIGH) leftCount++;
+  if (lastA5 == LOW && currA5 == HIGH) rightCount++;
 
-  // 右轮
-  if (rpwm >= 0) { digitalWrite(R_IN1, HIGH); digitalWrite(R_IN2, LOW); }
-  else { digitalWrite(R_IN1, LOW); digitalWrite(R_IN2, HIGH); rpwm = -rpwm; }
-
-  analogWrite(L_PWM, constrain(lpwm, 0, 255));
-  analogWrite(R_PWM, constrain(rpwm, 0, 255));
+  lastA4 = currA4;
+  lastA5 = currA5;
 }
 
-// ==================== speed trim（让车走直）====================
-int speedTrim() {  
-  long diff = leftCount - rightCount;
+// ======================= 电机控制 =======================
+void setMotor(int Lspd, int Rspd) {
 
-  // 简易线性补偿，不用太 fancy，小车就喜欢朴实无华 🤖
-  return constrain(diff * 2, -70, 70);
+  // 左轮方向设置
+  if (Lspd >= 0) {
+    digitalWrite(L_IN1, HIGH);
+    digitalWrite(L_IN2, LOW);
+  } else {
+    digitalWrite(L_IN1, LOW);
+    digitalWrite(L_IN2, HIGH);
+    Lspd = -Lspd;
+  }
+
+  // 右轮方向设置
+  if (Rspd >= 0) {
+    digitalWrite(R_IN1, HIGH);
+    digitalWrite(R_IN2, LOW);
+  } else {
+    digitalWrite(R_IN1, LOW);
+    digitalWrite(R_IN2, HIGH);
+    Rspd = -Rspd;
+  }
+
+  analogWrite(L_PWM, constrain(Lspd, 0, 255));
+  analogWrite(R_PWM, constrain(Rspd, 0, 255));
 }
 
-// ==================== 读取 IR 传感器 ====================
+// ======================= 软件速度补偿（软修正） =======================
+int speedTrim() {
+  long diff = rightCount - leftCount;
+  return constrain(diff * 2, -50, 50);
+}
+
+// ======================= 读取三个 IR 传感器 =======================
 void readIRSensors(bool &L, bool &M, bool &R) {
-  L = digitalRead(IR_LEFT) == LOW;   // 左黑线为 LOW
-  M = digitalRead(IR_MID)  == HIGH;  // 中间传感器逻辑反转
-  R = digitalRead(IR_RIGHT) == LOW;  // 右黑线为 LOW
+  L = (digitalRead(IR_LEFT)  == LOW);
+  M = (digitalRead(IR_MID)   == HIGH);
+  R = (digitalRead(IR_RIGHT) == LOW);
 }
 
+// ======================= 计算距离 =======================
 float updateDist() {
   float rev = ((leftCount + rightCount) / 2.0) / encoderPPR;
-  distance = rev*wheelCirc;   // <-- update global variable
+  distance = rev * wheelCirc;
   return distance;
 }
 
-// ==================== 更新 LCD ====================
+// ======================= LCD 更新 =======================
 void updateLCD() {
-
   lcd.setCursor(0, 0);
   lcd.print("Time: ");
   lcd.print((millis() - startTime) / 1000);
@@ -102,29 +130,9 @@ void updateLCD() {
   lcd.print("cm      ");
 }
 
-volatile boolean lastA4 = HIGH;
-volatile boolean lastA5 = HIGH;
-
-ISR(PCINT1_vect) {
-  boolean currA4 = digitalRead(A4);
-  boolean currA5 = digitalRead(A5);
-
-  // A4 rising edge = left encoder pulse
-  if (lastA4 == LOW && currA4 == HIGH) {
-    leftCount++;
-  }
-  lastA4 = currA4;
-
-  // A5 rising edge = right encoder pulse
-  if (lastA5 == LOW && currA5 == HIGH) {
-    rightCount++;
-  }
-  lastA5 = currA5;
-}
-
-
-// ==================== SETUP ====================
+// ======================= SETUP =======================
 void setup() {
+  Serial.begin(9600);
   lcd.begin(16, 2);
 
   pinMode(IR_LEFT,  INPUT_PULLUP);
@@ -141,68 +149,62 @@ void setup() {
   pinMode(R_IN1, OUTPUT);
   pinMode(R_IN2, OUTPUT);
 
-  // 编码器中断
-  // Enable Pin Change Interrupts on PCINT1 group (A0–A5)
-PCICR |= (1 << PCIE1);
-
-// Enable interrupts for PCINT20 (A4) and PCINT21 (A5)
-PCMSK1 |= (1 << PCINT20) | (1 << PCINT21);
+  // 启用 PCINT1 (A0-A5)
+  PCICR |= (1 << PCIE1);
+  PCMSK1 |= (1 << PCINT20) | (1 << PCINT21);
 
   startTime = millis();
 
   lcd.print("Line Car Ready!");
-  delay(1500);
+  delay(1000);
 }
 
-// ==================== LOOP 主逻辑 ====================
+// ======================= LOOP 主程序 =======================
 void loop() {
-
   bool L, M, R;
   readIRSensors(L, M, R);
 
-  int trim = speedTrim(); // 编码器速度补偿
-  int leftSpeed  = baseSpeed - trim;
-  int rightSpeed = baseSpeed + trim;
+  // ----------- 原地旋转 -----------
+  if (!L && !M && !R) {
+    setMotor(255, -255);   // 顺时针旋转：左退右进
+      updateLCD();
+      return;
+  }
 
-  // ---- 全黑停止 ----
-  if (L && M && R) {  
-    hardStop();
+  // ----------- 速度补偿（软修正） -----------
+  int trim = speedTrim();
+  int Lspd = baseSpeed - trim;
+  int Rspd = baseSpeed + trim;
+
+  // ----------- 线路跟随逻辑 -----------
+  if (M) {
+    // 中间黑线 → 直行
+    setMotor(Lspd, Rspd);
+  } 
+  else if (L) {
+    // 左黑线 → 右转硬修正
+    setMotor(Lspd - 100, Rspd + 100);
+  }
+  else if (R) {
+    // 右黑线 → 左转硬修正
+    setMotor(Lspd + 100, Rspd - 100);
+  }
+
+    // ----------- 全黑 → 永久停止 -----------
+  if (L && M && R) {
+    motorStopHard();
     return;
   }
 
+  // ----------- 永久停止状态保持 -----------
   if (stoppedForever) {
-    hardStop();      // keep motors off
-    updateLCD();     // still show time/dist if you want
-    return;          // stop everything else FOREVER
-}
-
-  // ---- 全白自旋 ----
-  static unsigned long allWhiteStart = 0;
-  if (!L && !M && !R) {  
-    if (allWhiteStart == 0) allWhiteStart = millis();
-    if (millis() - allWhiteStart > 10) {
-      setMotor(255, -255);
-      return;
-    }
-  } else {
-    allWhiteStart = 0;
-  }
-
-  // ---- 循迹逻辑 ----
-
-  if (M) {
-    setMotor(leftSpeed, rightSpeed); // 中间传感器检测到黑线，直行
-  } else {
-    if (L) {
-      setMotor(leftSpeed - 90, rightSpeed + 90); // 左偏，右转修正
-    } else if (R) {
-      setMotor(leftSpeed + 90, rightSpeed - 90); // 右偏，左转修正
-    }
-  }
-
-  // ---- 更新 LCD 显示时间和距离 ----
-    updateDist();
+    motorStopHard();
     updateLCD();
-    delay(5);
+    return;
+  }
 
+  // ----------- 更新显示 -----------  
+  updateDist();
+  updateLCD();
+  delay(1);
 }
