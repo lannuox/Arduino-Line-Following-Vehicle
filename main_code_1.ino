@@ -23,7 +23,7 @@ LiquidCrystal lcd(8, 9, 4, 5, 6, 7);
 
 // ======================= 车辆参数 =======================
 const int baseSpeed = 180;      // 基本速度
-const float wheelCirc = 7.5;    // 轮子周长 (cm)
+const float wheelCirc = 23.5;    // 轮子周长 (cm)
 const float encoderPPR = 40.0;  // 每圈脉冲数
 
 // ======================= 全局变量 =======================
@@ -101,7 +101,7 @@ void setMotor(int Lspd, int Rspd) {
 // ======================= 软件速度补偿（软修正） =======================
 int speedTrim() {
   long diff = rightCount - leftCount;
-  return constrain(diff * 2, -70, 70);
+  return constrain(diff * 2, -60, 60);
 }
 
 // ======================= 读取三个 IR 传感器 =======================
@@ -202,11 +202,11 @@ if (!L && !M && !R) {
   } 
   else if ((M && L) || (L && !M && !R)) {
     // 左黑线 → 右转硬修正
-    setMotor(Lspd - 160, Rspd + 130);
+    setMotor(Lspd - 160, Rspd + 140);
   }
   else if ((M && R) || (!L && !M && R)) {
     // 右黑线 → 左转硬修正
-    setMotor(Lspd + 130 , Rspd - 160);
+    setMotor(Lspd + 140 , Rspd - 160);
   }
 
   // ----------- 更新显示 -----------  
