@@ -39,6 +39,10 @@ const unsigned long STOP_4S_MS = 4000;
 const float STOP_DISTANCE_CM   = 330.0f;  // 行驶一定距离后停止
 
 // ------------------- Globals -------------------
+
+// Add this for non-blocking distance stop
+unsigned long distanceStopStart = 0;
+
 // 编码器计数
 volatile long leftCount  = 0;
 volatile long rightCount = 0;
@@ -95,8 +99,8 @@ void updateLCD();
 
 // ------------------- Encoder ISR -------------------
 ISR(PCINT1_vect) {
-  bool currA1 = digitalRead(A4);
-  bool currA2 = digitalRead(A5);
+  bool currA1 = digitalRead(ENC_RIGHT);
+  bool currA2 = digitalRead(ENC_LEFT);
 
   if (lastA2 == LOW && currA2 == HIGH) {
     leftCount++;
@@ -127,6 +131,9 @@ void setup() {
   pinMode(ENC_LEFT, INPUT_PULLUP);
   pinMode(ENC_RIGHT, INPUT_PULLUP);
   initEncoders();
+  prevIrL = digitalRead(IR_LEFT);
+  prevIrR = digitalRead(IR_RIGHT);
+
 
   // LCD
   lcd.begin(16, 2);
@@ -147,84 +154,72 @@ void setup() {
 void loop() {
   unsigned long now = millis();
 
-  // 读 MPU6050，得到 pitch
+  // 1️⃣ Read MPU6050 pitch
   readMPU();
 
-  // 更新距离
+  // 2️⃣ Update distance
   distance_cm = getDistanceCm();
 
-  // 读红外
+  // 3️⃣ Read IR sensors
   int irL = digitalRead(IR_LEFT);
   int irR = digitalRead(IR_RIGHT);
 
-  // 1) 终点停止：两个传感器都检测到黑线(LOW)
+  // ----------------- Termination Checks -----------------
+  // a) End-line stop (both sensors LOW)
   if (!finalLineStopped && irL == LOW && irR == LOW) {
     motorStopHard();
     finalLineStopped = true;
   }
 
-  // 已经终点停止，啥都不干，只更新 LCD
-  if (finalLineStopped) {
-    updateLCD();
-    return;
-  }
-
-  // 2) 距离停止：行驶到 330cm 停 2 秒并彻底停住
+  // b) Distance-based stop
   if (!distanceStopped && distance_cm >= STOP_DISTANCE_CM) {
     motorStopHard();
     distanceStopped = true;
-    delay(2000);        // 停 2 秒
+    distanceStopStart = now;  // use millis() instead of delay
   }
 
-  if (distanceStopped) {
+  // c) If fully stopped, only update LCD
+  if (finalLineStopped || (distanceStopped && now - distanceStopStart >= 2000)) {
     motorStopHard();
     updateLCD();
     return;
   }
 
-  // 3) 上坡事件：上坡 -> 下坡 -> 回到平地，停 4 秒并原地转圈
+  // ----------------- Slope Event -----------------
   if (!slopeEventDone) {
-    handleSlopeEvent();
+    handleSlopeEvent();  // non-blocking version
   }
 
-  // 4) 编码器左右轮速平衡修正 (简单 P 控制)
+  // ----------------- Speed trim -----------------
   int trim = speedTrimPID();
   int baseL = BASE_SPEED - trim;
   int baseR = BASE_SPEED + trim;
 
-  // 5) 红外偏线修正
-  // 黑线 = LOW
-  //   左 LOW 右 HIGH  => 线在左边 -> 需要向左转：左慢右快
-  //   左 HIGH 右 LOW  => 线在右边 -> 向右转：右慢左快
-  if (irL == LOW && irR == HIGH) {
+  // ----------------- IR Line Correction -----------------
+  if (irL == LOW && irR == HIGH) {     // line on left
     baseL -= TURN_BOOST;
     baseR += TURN_BOOST;
-  } else if (irL == HIGH && irR == LOW) {
+  } else if (irL == HIGH && irR == LOW) { // line on right
     baseL += TURN_BOOST;
     baseR -= TURN_BOOST;
   }
 
-  // 6) 简单直角转弯检测：某一侧突然看到黑线又突然消失
-  //   这里用“刚刚是 LOW，现在变回 HIGH 且另一侧一直 HIGH”来粗略判断
+  // ----------------- Right angle turn -----------------
   if (prevIrL == LOW && irL == HIGH && irR == HIGH) {
-    // 左边 sensor 短暂看到黑线 -> 左侧 直角弯
-    handleRightAngleTurn(-1);  // 左转
+    handleRightAngleTurn(-1);  // left
   } else if (prevIrR == LOW && irR == HIGH && irL == HIGH) {
-    // 右边 sensor 短暂看到黑线 -> 右侧 直角弯
-    handleRightAngleTurn(+1);  // 右转
+    handleRightAngleTurn(+1);  // right
   }
 
-  prevIrL = irL;
-  prevIrR = irR;
-
-  // 7) 设置电机速度
+  // ----------------- Set motor speed -----------------
   setMotor(baseL, baseR);
 
-  // 8) LCD 显示（节流刷新）
-  if (now - lastLcdMillis >= 200) { // 200ms 刷一次
+  // ----------------- Update LCD -----------------
+  if (now - lastLcdMillis >= 200) {
     updateLCD();
     lastLcdMillis = now;
   }
+
 }
 
 // ------------------- Encoders init -------------------
@@ -352,7 +347,7 @@ void handleSlopeEvent() {
   if (climbing && peaked && ap < NEAR_ZERO_THRESHOLD) {
     // 上坡 + 过峰 + 回到平地，触发事件
     motorStopHard();
-    delay(STOP_4S_MS);   // 停 4 秒
+    delay(4000);   // 停 4 秒
     doRotate360_byEncoder();
     slopeEventDone = true;
     climbing = false;
