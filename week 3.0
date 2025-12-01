@@ -1,0 +1,479 @@
+#include <Wire.h>
+#include <LiquidCrystal.h>
+
+// ------------------- LCD -------------------
+LiquidCrystal lcd(8, 9, 4, 5, 6, 7); // RS,E,D4,D5,D6,D7
+
+// ------------------- Pins -------------------
+#define IR_LEFT   A3
+#define IR_RIGHT  0       // 黑线 LOW，不在线 HIGH
+
+#define MPU_ADDR  0x68    // MPU6050 I2C 地址(默认 0x68)
+
+#define ENC_LEFT  A2
+#define ENC_RIGHT A1
+
+#define L_PWM   11
+#define R_PWM   3
+#define L_IN1   1
+#define L_IN2   2
+#define R_IN1   12
+#define R_IN2   13
+
+// ------------------- Vehicle parameters -------------------
+const float wheelCirc = 4.71f;       // 车轮周长(单位: cm) —— 自己按实际改
+const float encoderPPR = 40.0f;      // 每圈脉冲数
+const float TRACK_WIDTH_CM = 13.2f;  // 车轮间距(单位: cm)
+
+// 基础速度 & 转向力度
+const int BASE_SPEED = 150;
+const int TURN_BOOST = 80;
+
+// 上坡/下坡阈值（角度）
+const float CLIMB_THRESHOLD      = 10.0f; // 认为开始上坡
+const float PEAK_ANGLE_THRESHOLD = 25.0f; // 已经到坡顶
+const float NEAR_ZERO_THRESHOLD  = 5.0f;  // 回到接近平地
+
+// 事件时间
+const unsigned long STOP_4S_MS = 4000;
+const float STOP_DISTANCE_CM   = 330.0f;  // 行驶一定距离后停止
+
+// ------------------- Globals -------------------
+// 编码器计数
+volatile long leftCount  = 0;
+volatile long rightCount = 0;
+
+volatile bool lastA1 = HIGH;
+volatile bool lastA2 = HIGH;
+
+// 行驶统计
+unsigned long startMillis = 0;
+float distance_cm = 0.0;
+
+// 速度记录（当前 PWM）
+int currentLspd = 0;
+int currentRspd = 0;
+
+// 上坡状态
+bool climbing           = false;
+bool peaked             = false;
+bool slopeEventDone     = false;
+
+// 距离停止 & 终点停止
+bool distanceStopped    = false;
+bool finalLineStopped   = false;
+
+// MPU6050 相关
+float pitch = 0.0;
+
+// 右角转弯检测
+int  prevIrL = HIGH;
+int  prevIrR = HIGH;
+
+// LCD 刷新
+unsigned long lastLcdMillis = 0;
+
+// ------------------- Function declarations -------------------
+void initMPU();
+void readMPU();
+
+void initEncoders();
+long readLeftCount();
+long readRightCount();
+
+void setMotor(int Lspd, int Rspd);
+void motorStopHard();
+
+float getDistanceCm();
+
+int  speedTrimPID();               // 返回速度修正值
+void handleSlopeEvent();           // 检测并处理上坡事件
+void handleRightAngleTurn(int side); // -1 左转, +1 右转
+
+void doRotate360_byEncoder();
+void updateLCD();
+
+// ------------------- Encoder ISR -------------------
+ISR(PCINT1_vect) {
+  bool currA1 = digitalRead(A4);
+  bool currA2 = digitalRead(A5);
+
+  if (lastA2 == LOW && currA2 == HIGH) {
+    leftCount++;
+  }
+  if (lastA1 == LOW && currA1 == HIGH) {
+    rightCount++;
+  }
+
+  lastA1 = currA1;
+  lastA2 = currA2;
+}
+
+// ------------------- Setup -------------------
+void setup() {
+  // 电机引脚
+  pinMode(L_PWM, OUTPUT);
+  pinMode(R_PWM, OUTPUT);
+  pinMode(L_IN1, OUTPUT);
+  pinMode(L_IN2, OUTPUT);
+  pinMode(R_IN1, OUTPUT);
+  pinMode(R_IN2, OUTPUT);
+
+  // 传感器
+  pinMode(IR_LEFT, INPUT_PULLUP);   // 黑线 LOW
+  pinMode(IR_RIGHT, INPUT_PULLUP);  // 黑线 LOW
+
+  // 编码器
+  pinMode(ENC_LEFT, INPUT_PULLUP);
+  pinMode(ENC_RIGHT, INPUT_PULLUP);
+  initEncoders();
+
+  // LCD
+  lcd.begin(16, 2);
+  lcd.clear();
+  lcd.print("Line Car Ready");
+
+  // I2C & MPU6050
+  Wire.begin();      // 注意：默认 SDA/SCL 在 A4/A5，如果你接在别的脚要相应改库或接线
+  initMPU();
+
+  delay(1000);
+  lcd.clear();
+
+  startMillis = millis();
+}
+
+// ------------------- Main loop -------------------
+void loop() {
+  unsigned long now = millis();
+
+  // 读 MPU6050，得到 pitch
+  readMPU();
+
+  // 更新距离
+  distance_cm = getDistanceCm();
+
+  // 读红外
+  int irL = digitalRead(IR_LEFT);
+  int irR = digitalRead(IR_RIGHT);
+
+  // 1) 终点停止：两个传感器都检测到黑线(LOW)
+  if (!finalLineStopped && irL == LOW && irR == LOW) {
+    motorStopHard();
+    finalLineStopped = true;
+  }
+
+  // 已经终点停止，啥都不干，只更新 LCD
+  if (finalLineStopped) {
+    updateLCD();
+    return;
+  }
+
+  // 2) 距离停止：行驶到 330cm 停 2 秒并彻底停住
+  if (!distanceStopped && distance_cm >= STOP_DISTANCE_CM) {
+    motorStopHard();
+    distanceStopped = true;
+    delay(2000);        // 停 2 秒
+  }
+
+  if (distanceStopped) {
+    motorStopHard();
+    updateLCD();
+    return;
+  }
+
+  // 3) 上坡事件：上坡 -> 下坡 -> 回到平地，停 4 秒并原地转圈
+  if (!slopeEventDone) {
+    handleSlopeEvent();
+  }
+
+  // 4) 编码器左右轮速平衡修正 (简单 P 控制)
+  int trim = speedTrimPID();
+  int baseL = BASE_SPEED - trim;
+  int baseR = BASE_SPEED + trim;
+
+  // 5) 红外偏线修正
+  // 黑线 = LOW
+  //   左 LOW 右 HIGH  => 线在左边 -> 需要向左转：左慢右快
+  //   左 HIGH 右 LOW  => 线在右边 -> 向右转：右慢左快
+  if (irL == LOW && irR == HIGH) {
+    baseL -= TURN_BOOST;
+    baseR += TURN_BOOST;
+  } else if (irL == HIGH && irR == LOW) {
+    baseL += TURN_BOOST;
+    baseR -= TURN_BOOST;
+  }
+
+  // 6) 简单直角转弯检测：某一侧突然看到黑线又突然消失
+  //   这里用“刚刚是 LOW，现在变回 HIGH 且另一侧一直 HIGH”来粗略判断
+  if (prevIrL == LOW && irL == HIGH && irR == HIGH) {
+    // 左边 sensor 短暂看到黑线 -> 左侧 直角弯
+    handleRightAngleTurn(-1);  // 左转
+  } else if (prevIrR == LOW && irR == HIGH && irL == HIGH) {
+    // 右边 sensor 短暂看到黑线 -> 右侧 直角弯
+    handleRightAngleTurn(+1);  // 右转
+  }
+
+  prevIrL = irL;
+  prevIrR = irR;
+
+  // 7) 设置电机速度
+  setMotor(baseL, baseR);
+
+  // 8) LCD 显示（节流刷新）
+  if (now - lastLcdMillis >= 200) { // 200ms 刷一次
+    updateLCD();
+    lastLcdMillis = now;
+  }
+}
+
+// ------------------- Encoders init -------------------
+void initEncoders() {
+  // 开启 PCINT1 (对应 A0~A5)
+  PCICR  |= (1 << PCIE1);
+  // A1 = PCINT12, A2 = PCINT13
+  PCMSK1 |= (1 << PCINT12) | (1 << PCINT13);
+
+  lastA1 = digitalRead(A1);
+  lastA2 = digitalRead(A2);
+}
+
+// 安全读取编码器
+long readLeftCount() {
+  noInterrupts();
+  long c = leftCount;
+  interrupts();
+  return c;
+}
+
+long readRightCount() {
+  noInterrupts();
+  long c = rightCount;
+  interrupts();
+  return c;
+}
+
+// ------------------- Motors -------------------
+void setMotor(int Lspd, int Rspd) {
+  // 保存当前设定 PWM
+  currentLspd = Lspd;
+  currentRspd = Rspd;
+
+  // 方向 + 绝对值
+  if (Lspd >= 0) {
+    digitalWrite(L_IN1, HIGH);
+    digitalWrite(L_IN2, LOW);
+  } else {
+    digitalWrite(L_IN1, LOW);
+    digitalWrite(L_IN2, HIGH);
+    Lspd = -Lspd;
+  }
+
+  if (Rspd >= 0) {
+    digitalWrite(R_IN1, HIGH);
+    digitalWrite(R_IN2, LOW);
+  } else {
+    digitalWrite(R_IN1, LOW);
+    digitalWrite(R_IN2, HIGH);
+    Rspd = -Rspd;
+  }
+
+  // 限幅到 [0,255]
+  if (Lspd > 255) Lspd = 255;
+  if (Rspd > 255) Rspd = 255;
+
+  analogWrite(L_PWM, Lspd);
+  analogWrite(R_PWM, Rspd);
+}
+
+void motorStopHard() {
+  analogWrite(L_PWM, 0);
+  analogWrite(R_PWM, 0);
+  digitalWrite(L_IN1, LOW);
+  digitalWrite(L_IN2, LOW);
+  digitalWrite(R_IN1, LOW);
+  digitalWrite(R_IN2, LOW);
+  currentLspd = 0;
+  currentRspd = 0;
+}
+
+// ------------------- Distance -------------------
+float getDistanceCm() {
+  long l = readLeftCount();
+  long r = readRightCount();
+  long avgCounts = (l + r) / 2;
+
+  // 距离 = 圈数 * 轮周长
+  float rev = (float)avgCounts / encoderPPR;
+  float dist_cm = rev * wheelCirc;  // wheelCirc 单位为 cm
+
+  return dist_cm;
+}
+
+// ------------------- Speed trim PID -------------------
+int speedTrimPID() {
+  static long prevL = 0;
+  static long prevR = 0;
+
+  long curL = readLeftCount();
+  long curR = readRightCount();
+
+  long dL = curL - prevL;
+  long dR = curR - prevR;
+
+  prevL = curL;
+  prevR = curR;
+
+  long error = dL - dR;   // 左轮比右轮快 -> error > 0
+
+  // 简单 P 系数，数值可以自己调
+  const float Kp = 2.0f;
+  int trim = (int)(Kp * (float)error);
+
+  // 防止修正量过大
+  if (trim > 80)  trim = 80;
+  if (trim < -80) trim = -80;
+
+  return trim;
+}
+
+// ------------------- Slope event -------------------
+void handleSlopeEvent() {
+  float ap = fabs(pitch);
+
+  if (!climbing && ap > CLIMB_THRESHOLD) {
+    climbing = true;
+  }
+
+  if (climbing && !peaked && ap > PEAK_ANGLE_THRESHOLD) {
+    peaked = true;
+  }
+
+  if (climbing && peaked && ap < NEAR_ZERO_THRESHOLD) {
+    // 上坡 + 过峰 + 回到平地，触发事件
+    motorStopHard();
+    delay(STOP_4S_MS);   // 停 4 秒
+    doRotate360_byEncoder();
+    slopeEventDone = true;
+    climbing = false;
+    peaked = false;
+  }
+}
+
+// ------------------- Right angle turn -------------------
+// side: -1 左转, +1 右转
+void handleRightAngleTurn(int side) {
+  // 目标转动的轮子行程 = 圆周的一小段，这里用 90 度 => (pi * TRACK_WIDTH / 4)
+  float turnDistance = 3.14f * TRACK_WIDTH_CM / 4.0f;
+  long targetCounts = (long)(encoderPPR * (turnDistance / wheelCirc));
+
+  long startL = readLeftCount();
+  long startR = readRightCount();
+
+  // 左转: 左轮后退，右轮前进
+  // 右转: 左轮前进，右轮后退
+  int spd = BASE_SPEED;
+  if (spd < 120) spd = 120;
+
+  while (true) {
+    long curL = readLeftCount();
+    long curR = readRightCount();
+
+    long dL = labs(curL - startL);
+    long dR = labs(curR - startR);
+    long avg = (dL + dR) / 2;
+
+    if (avg >= targetCounts) break;
+
+    if (side < 0) {
+      // 左转
+      setMotor(-spd, spd);
+    } else {
+      // 右转
+      setMotor(spd, -spd);
+    }
+  }
+
+  motorStopHard();
+}
+
+// ------------------- 360 deg rotate -------------------
+void doRotate360_byEncoder() {
+  float turnDistance = 3.14f * TRACK_WIDTH_CM;  // 360 度
+  long targetCounts = (long)(encoderPPR * (turnDistance / wheelCirc));
+
+  long startL = readLeftCount();
+  long startR = readRightCount();
+
+  int spd = BASE_SPEED;
+  if (spd < 150) spd = 150;
+
+  while (true) {
+    long curL = readLeftCount();
+    long curR = readRightCount();
+
+    long dL = labs(curL - startL);
+    long dR = labs(curR - startR);
+    long avg = (dL + dR) / 2;
+
+    if (avg >= targetCounts) break;
+
+    // 左轮后退，右轮前进
+    setMotor(-spd, spd);
+  }
+
+  motorStopHard();
+}
+
+// ------------------- MPU6050 -------------------
+void initMPU() {
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x6B);      // PWR_MGMT_1
+  Wire.write(0x00);      // 解除休眠
+  Wire.endTransmission(true);
+
+  // 可以按需设置量程，这里用默认
+}
+
+void readMPU() {
+  // 只用加速度算一个简单 pitch
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x3B);      // ACCEL_XOUT_H
+  Wire.endTransmission(false);
+  Wire.requestFrom(MPU_ADDR, 6, true);  // 只要加速度 XYZ
+
+  if (Wire.available() < 6) return;
+
+  int16_t ax = (Wire.read() << 8) | Wire.read();
+  int16_t ay = (Wire.read() << 8) | Wire.read();
+  int16_t az = (Wire.read() << 8) | Wire.read();
+
+  // 根据模块朝向，选适合的轴计算
+  // 这里假设 pitch 主要由 X,Z 决定
+  float fax = (float)ax / 16384.0f; // +/-2g
+  float faz = (float)az / 16384.0f;
+
+  pitch = atan2f(fax, faz) * 180.0f / 3.1415926f;
+}
+
+// ------------------- LCD -------------------
+void updateLCD() {
+  unsigned long now = millis();
+  float t_sec = (now - startMillis) / 1000.0f;
+
+  lcd.setCursor(0, 0);
+  // T:xx.x D:xxx.x
+  lcd.print("T:");
+  lcd.print(t_sec, 1);
+  lcd.print(" D:");
+  lcd.print(distance_cm, 1);
+
+  lcd.setCursor(0, 1);
+  // A:xx  L:xxx R:xxx
+  lcd.print("A:");
+  lcd.print((int)pitch);
+  lcd.print(" L:");
+  lcd.print(currentLspd);
+  lcd.print(" R:");
+  lcd.print(currentRspd);
+}
