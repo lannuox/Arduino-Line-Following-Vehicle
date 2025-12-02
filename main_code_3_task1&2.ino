@@ -143,7 +143,7 @@ void setup() {
     Wire.begin();
 
     mpu.begin();
-    mpu.setAccOffsets(-ax_offset, -ay_offset, -az_offset);  // 稍后我教你如何获取
+    mpu.setAccOffsets(0, 0, 0.30);    
     delay(500);
     mpu.calcGyroOffsets();  // 自动校准陀螺仪
 
