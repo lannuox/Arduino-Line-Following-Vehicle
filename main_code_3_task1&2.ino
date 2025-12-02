@@ -35,6 +35,7 @@ unsigned long startTime = 0;
 unsigned long allWhiteTimer = 0;
 unsigned long allBlackTimer = 0;
 
+float filteredPitch = 0;
 float distance = 0;
 bool stoppedForever = false;
 
@@ -106,12 +107,15 @@ float getSlopeAngle() {
     float ay = mpu.getAccY();
     float az = mpu.getAccZ();
 
-    // X 轴朝上时的 Pitch 公式
-    float pitch = atan2(-az, ay) * 57.3;
+    // X 轴朝上的 Pitch
+    float rawPitch = atan2(-az, ay) * 57.3;
 
-    return pitch;
+    // 一阶低通滤波（LPF）
+    float alpha = 0.15;  // 越小越稳
+    filteredPitch = filteredPitch * (1 - alpha) + rawPitch * alpha;
+
+    return filteredPitch;
 }
-
 
 // ======================= LCD 更新 =======================
 void updateLCD() {
@@ -139,7 +143,8 @@ void setup() {
     Wire.begin();
 
     mpu.begin();
-    delay(100);          // MPU 初始化需要短延时
+    mpu.setAccOffsets(-ax_offset, -ay_offset, -az_offset);  // 稍后我教你如何获取
+    delay(500);
     mpu.calcGyroOffsets();  // 自动校准陀螺仪
 
     pinMode(IR_LEFT, INPUT_PULLUP);
