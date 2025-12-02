@@ -102,16 +102,16 @@ float updateDist() {
 float getSlopeAngle() {
     mpu.update();
 
-    // 根据你的 MPU 竖装方向决定 AccX/AccY/AccZ 的组合
     float ax = mpu.getAccX();
     float ay = mpu.getAccY();
     float az = mpu.getAccZ();
 
-    // 竖着放时，一般 pitch = atan2(ax, az)
-    float pitch = atan2(ax, az) * 57.3;
+    // X 轴朝上时的 Pitch 公式
+    float pitch = atan2(-az, ay) * 57.3;
 
     return pitch;
 }
+
 
 // ======================= LCD 更新 =======================
 void updateLCD() {
