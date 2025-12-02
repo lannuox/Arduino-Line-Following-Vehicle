@@ -23,7 +23,7 @@ MPU6050 mpu(Wire);        // 注意：ElectronicCats 库可直接这样初始化
 #define R_IN2   13
 
 // 车辆参数
-const int baseSpeed = 120;
+const int baseSpeed = 80;
 const float wheelCirc = 23.6;
 const float encoderPPR = 40.0;
 
@@ -102,19 +102,7 @@ float updateDist() {
 // 使用 ElectronicCats 库计算 Pitch
 float getSlopeAngle() {
     mpu.update();
-
-    float ax = mpu.getAccX();
-    float ay = mpu.getAccY();
-    float az = mpu.getAccZ();
-
-    // X 轴朝上的 Pitch
-    float rawPitch = atan2(-az, ay) * 57.3;
-
-    // 一阶低通滤波（LPF）
-    float alpha = 0.15;  // 越小越稳
-    filteredPitch = filteredPitch * (1 - alpha) + rawPitch * alpha;
-
-    return filteredPitch;
+    return mpu.getAngleZ();   // 就用库自带的融合角度
 }
 
 // ======================= LCD 更新 =======================
@@ -141,9 +129,7 @@ int speedTrim() {
 void setup() {
     lcd.begin(16,2);
     Wire.begin();
-
     mpu.begin();
-    mpu.setAccOffsets(0, 0, 0.30);    
     delay(500);
     mpu.calcGyroOffsets();  // 自动校准陀螺仪
 
@@ -185,14 +171,8 @@ void loop() {
     updateLCD();
     delay(4000);            // 停车4秒
 
-    setMotor(255, -255);    // 旋转360°
-    updateLCD();
-    delay(1700);            // turn time
-
-    setMotor(80, 80);
-    delay(4000);         // 完成旋转后停止
-    updateLCD();
-
+    setMotor(170, -150);    // 旋转360°
+    delay(3000);            // turn time
     slopeActionDone = true; // 标记动作完成
   }
 
@@ -215,7 +195,7 @@ void loop() {
     else allBlackTimer=0;
 
     // 全白原地旋转
-    if (!L && !M && !R) { if (allWhiteTimer==0) allWhiteTimer=millis(); if (millis()-allWhiteTimer>200){ setMotor(255,-255); updateLCD(); return; } }
+    if (!L && !M && !R) { if (allWhiteTimer==0) allWhiteTimer=millis(); if (millis()-allWhiteTimer>200){ setMotor(170,-150); updateLCD(); return; } }
     else allWhiteTimer=0;
 
     // 线路跟随
