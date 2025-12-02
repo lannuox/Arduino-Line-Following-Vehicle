@@ -133,7 +133,6 @@ void updateLCD() {
 
 // ======================= SETUP =======================
 void setup() {
-  Serial.begin(9600);
   lcd.begin(16, 2);
 
   pinMode(IR_LEFT,  INPUT_PULLUP);
@@ -172,10 +171,15 @@ void loop() {
   }
 
       // ----------- 全黑 → 永久停止 -----------
-  if (L && M && R) {
-    motorStopHard();
-    return;
-  }
+if (L && M && R) {
+    if (allBlackTimer == 0) allBlackTimer = millis();
+    if (millis() - allBlackTimer > 100) {
+        motorStopHard();
+        return;
+    }
+} else {
+    allBlackTimer = 0;
+}
 
 // ----------- 原地旋转（全白超过300ms触发） -----------
 if (!L && !M && !R) {
