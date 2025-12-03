@@ -9,7 +9,7 @@ MPU6050 mpu(Wire);
 // ===================== Motor Pins =====================
 #define L_PWM   11
 #define R_PWM   3
-#define L_IN1   1
+#define L_IN1   A1
 #define L_IN2   2
 #define R_IN1   12
 #define R_IN2   13
