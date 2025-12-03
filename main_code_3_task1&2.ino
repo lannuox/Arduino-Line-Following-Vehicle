@@ -23,7 +23,7 @@ MPU6050 mpu(Wire);        // 注意：ElectronicCats 库可直接这样初始化
 #define R_IN2   13
 
 // 车辆参数
-const int baseSpeed = 80;
+const int baseSpeed = 120;
 const float wheelCirc = 23.6;
 const float encoderPPR = 40.0;
 
@@ -41,6 +41,7 @@ bool stoppedForever = false;
 
 // 坡道相关
 bool uphillDetected = false;
+bool downhillDetected = false;
 bool slopeActionDone = false;
 bool distPause = false;
 
@@ -99,12 +100,11 @@ float updateDist() {
 }
 
 // ======================= 获取坡道角度 =======================
-// 使用 ElectronicCats 库计算 Pitch
+// 使用 ElectronicCats 库计算
 float getSlopeAngle() {
     mpu.update();
-    return mpu.getAngleZ();   // 就用库自带的融合角度
+    return mpu.getAngleX();
 }
-
 // ======================= LCD 更新 =======================
 void updateLCD() {
     lcd.setCursor(0,0);
@@ -164,15 +164,35 @@ void loop() {
 
     if (stoppedForever) { motorStopHard(); return; }
 
-    // 坡顶动作（阻塞式）
-  if (uphillDetected && !slopeActionDone && abs(angleZ) <= 10) {
-    delay(200);
-    setMotor(0, 0);        // 停车
-    updateLCD();
-    delay(4000);            // 停车4秒
+    int trim = speedTrim();
+    int Lspd = baseSpeed - trim;
+    int Rspd = baseSpeed + trim;
 
-    setMotor(170, -150);    // 旋转360°
-    delay(3000);            // turn time
+    if (M) setMotor(Lspd,Rspd);
+    else if ((M && L) || (L && !M && !R)) setMotor(Lspd-100,Rspd+80);
+    else if ((M && R) || (!L && !M && R)) setMotor(Lspd+80,Rspd-100);
+
+    // 坡顶动作（阻塞式）
+    if (uphillDetected && !slopeActionDone && abs(angleZ) <= 6) {
+      delay(200);
+      
+      setMotor(0, 0);        // 停车
+      updateLCD();
+      delay(1000);
+      updateLCD();
+      delay(1000);
+      updateLCD();
+      delay(1000);
+      updateLCD();
+      delay(1000);            // 停车4秒
+
+      setMotor(200, -190);    // 旋转360°
+      delay(1000);
+      updateLCD();
+      delay(1000);
+      updateLCD();
+      delay(1000);
+      updateLCD();            // turn time
     slopeActionDone = true; // 标记动作完成
   }
 
@@ -181,31 +201,23 @@ void loop() {
       distPause=true; 
       setMotor(0,0); 
       delay(1000); 
-      updateLCD(); 
+      updateLCD();
       delay(1000); 
       updateLCD(); 
       return; 
     }
 
     // 坡道变速
-    if (angleZ > 10 && !slopeActionDone) { uphillDetected=true; setMotor(255,210); updateLCD(); return; } // 上坡
+    if (angleZ > 5 && !slopeActionDone) { uphillDetected=true; setMotor(255,255); updateLCD(); return; } // 上坡
+    if (angleZ < -6 && slopeActionDone) { downhillDetected=true; setMotor(-60,-60); delay(1500); updateLCD(); return; } // 下坡
 
     // 全黑永久停
     if (L && M && R) { if (allBlackTimer==0) allBlackTimer=millis(); if (millis()-allBlackTimer>100){ motorStopHard(); return; } }
     else allBlackTimer=0;
 
     // 全白原地旋转
-    if (!L && !M && !R) { if (allWhiteTimer==0) allWhiteTimer=millis(); if (millis()-allWhiteTimer>200){ setMotor(170,-150); updateLCD(); return; } }
+    if (!L && !M && !R) { if (allWhiteTimer==0) allWhiteTimer=millis(); if (millis()-allWhiteTimer>150){ setMotor(255,-255); updateLCD(); return; } }
     else allWhiteTimer=0;
-
-    // 线路跟随
-    int trim = speedTrim();
-    int Lspd = baseSpeed - trim;
-    int Rspd = baseSpeed + trim;
-
-    if (M) setMotor(Lspd,Rspd);
-    else if ((M && L) || (L && !M && !R)) setMotor(Lspd-100,Rspd+100);
-    else if ((M && R) || (!L && !M && R)) setMotor(Lspd+100,Rspd-100);
 
     updateLCD();
     delay(1);
