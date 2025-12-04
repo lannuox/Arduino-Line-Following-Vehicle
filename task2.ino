@@ -107,6 +107,7 @@ if (uphillTriggered) {
     if (abs(angleFiltered) <= ANGLE_THRESHOLD) {
 
         // -------- 停车 4 秒 --------
+        delay(100);
         setMotor(0, 0);
         for (int i = 0; i < 4; i++) {
             updateLCD();
@@ -115,7 +116,7 @@ if (uphillTriggered) {
 
         // -------- 旋转 360° --------
         setMotor(255, -255);
-        delay(4000);
+        delay(3900);
 
         // -------- 小走一下 --------
         setMotor(0, 0); delay(1000);
